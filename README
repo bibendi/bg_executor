@@ -1,0 +1,37 @@
+Плагин для Ruby on Rails 2.3.x
+
+Демон фоновых задач, а также некая замена крона для частых (например пятиминутных) задач, т.к. запуск окружения через rake задачи занимает огромное количество ресурсов.
+Все задачи выполняются в отдельных процессах, посредством форка.
+Задачи называются job, и лежат в папке /app/jobs/
+Есть ограничения на количество одновременно выполняемых джбов.
+Также есть защита от одновременного запуска одного джоба.
+
+
+Постановка задачи в очередь
+client = BgExecutor::Client.new
+@job_id, @secure_key = client.queue_job!(:job_name, {:param_1 => 1, :param_2 => 2})
+
+
+Запросить результат выполнения
+client.ask_result(@job_id, @secure_key)
+
+
+Регулярные задачи описываются в /app/jobs/schedule.rb
+class BgExecutor::Schedule < BgExecutor::BaseSchedule
+  every 5.minutes do
+    regular_job_name1
+    regular_job_name2
+  end
+  
+  every 1.minutes do
+    regular_job_name3
+  end
+end
+
+
+Логи ведутся в 
+log/bg_executor_daemon.rb.output
+log/bg_executor_job.rb.output
+log/bg_executor_regular_job.rb.output
+
+Продолжение мануала следует..
