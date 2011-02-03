@@ -112,9 +112,6 @@ module BgExecutor
 
   # клас для регулярных задач
   class Job::Regular
-    DEFAULT_EXEC_TIME = 30.minutes
-    class_inheritable_accessor :singleton_job
-
     class << self
       def create(job_name, params)
         real_job_name = "#{job_name}_job"
@@ -128,23 +125,9 @@ module BgExecutor
       rescue LoadError, MissingSourceFile, NameError
         raise "No such job #{job_name}, #{class_name}"
       end
-
-      # указать, что только один джоб этого класса может выполняться в одну единицу времени
-      # можно также задать указать параметры джоба, и тогда только один джоб с такой комбинацией параметров может выполняться в одну единицу времени
-      def acts_as_singleton
-        self.singleton_job = true
-      end
-
-      def acts_as_singleton?
-        self.singleton_job == true
-      end
     end
 
     def initialize(params)
-      if self.class.acts_as_singleton? && Blocker::send("#{self.class.to_s.demodulize.underscore}_locked?".to_sym, DEFAULT_EXEC_TIME)
-        raise "Job already started"
-      end
-
       @params = params
     end
 

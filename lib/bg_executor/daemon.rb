@@ -17,10 +17,7 @@ module BgExecutor
       wait_till_fork_allowed! do
         puts "Executing job ##{job[:id]}"
         @daemon_group = Daemons.run_proc('bg_executor_job.rb', daemon_options) do
-          ActiveRecord::Base.logger.level = Logger::Severity::UNKNOWN
-          ActiveRecord::Base.logger = Logger.new('/dev/null')
-          ActiveRecord::Base.connection.reconnect!
-          ActiveRecord::Base.verify_active_connections!
+          db_reconnect!
 
           begin
             ::BgExecutor::Executor.new.execute_job(job)
@@ -44,28 +41,40 @@ module BgExecutor
 
     def execute_regular_jobs
       return unless @has_regular_jobs
+
       BgExecutor::Schedule.tasks.each do |task|
         if !task[:last_run_at] || task[:last_run_at] + task[:interval] <= Time.now
-          puts "Executing regular job #{task[:name]}"
+          unless Blocker.send("job_regular_#{task[:name]}_locked?".to_sym, DEFAULT_QUEUE_TIMEOUT)
 
-          @daemon_group = Daemons.run_proc('bg_executor_regular_job.rb', daemon_options) do
-            ActiveRecord::Base.logger.level = Logger::Severity::UNKNOWN
-            ActiveRecord::Base.logger = Logger.new('/dev/null')
-            ActiveRecord::Base.connection.reconnect!
-            ActiveRecord::Base.verify_active_connections!
+            puts "Executing regular job #{task[:name]}"
 
-            begin
-              ::BgExecutor::Executor.new.execute_regular_job(task[:name], task[:args])
-            rescue => e
-              puts e.message
-              puts e.backtrace.join("\n")
+            Daemons.run_proc('bg_executor_regular_job.rb', daemon_options) do
+              db_reconnect!
+
+              begin
+                Blocker.send("lock_job_regular_#{task[:name]}".to_sym, DEFAULT_QUEUE_TIMEOUT) do
+                  ::BgExecutor::Executor.new.execute_regular_job(task[:name], task[:args])
+                end
+              rescue => e
+                puts e.message
+                puts e.backtrace.join("\n")
+              end
+              exit()
             end
-            exit()
           end
-
           task[:last_run_at] = Time.at((Time.now.to_i - (Time.now.to_i % 10))) # округляем до 10 секунд
         end
       end
+    rescue => e
+      puts e.message
+      puts e.backtrace.join("\n")
+    end
+
+    def db_reconnect!
+      ActiveRecord::Base.logger.level = Logger::Severity::UNKNOWN
+      ActiveRecord::Base.logger = Logger.new('/dev/null')
+      ActiveRecord::Base.connection.reconnect!
+      ActiveRecord::Base.verify_active_connections!
     end
 
     def get_concurrency
