@@ -1,0 +1,63 @@
+<div class="progress-bar" id="progress-bar-<%=job_id%>">
+  <div class="indicator-container">
+    <div class="indicator" style="width:0%;display:none;" id="indicator-<%=job_id%>"></div>
+  </div>
+  <div class="status" id="status-<%=job_id%>"><%= h options[:status_messages][:new] %></div>
+</div>
+<script type="text/javascript">
+  var __progressBarMutex = 0
+  new PeriodicalExecuter(function(pe) {
+      if (!__progressBarMutex) {
+          new Ajax.Request('/__job?a=status_info&id=<%=job_id%>&s=<%=secure_key%>', {
+              onCreate:function() { __progressBarMutex = 1 },
+              onComplete: function () { __progressBarMutex = 0 },
+              onSuccess:function(response) {
+                  var status = response.responseJSON.result.status
+                  var info   = response.responseJSON.result.info
+                  switch(status) {
+                    case 'new':
+                      $('status-<%=job_id%>').innerHTML = "<%= options[:status_messages][:new].gsub(/"/, '\\"') %>";
+
+                      if(!info.completed) {
+                          $('indicator-<%=job_id%>').hide()
+                      } else {
+                          $('indicator-<%=job_id%>').show()
+                      }
+
+                      break;
+                    case "running":
+                      $('status-<%=job_id%>').innerHTML = "<%= options[:status_messages][:running].gsub(/"/, '\\"') %>".replace(/%perc%/g, info.completed);
+
+                      if(!info.completed) {
+                          $('indicator-<%=job_id%>').hide()
+                      } else {
+                          $('indicator-<%=job_id%>').show()
+                          $('indicator-<%=job_id%>').style.width = info.completed + '%'
+                      }
+
+                      break;
+                    case "finished":
+                      $('status-<%=job_id%>').innerHTML = "<%= options[:status_messages][:finished].gsub(/"/, '\\"') %>";
+                      if(!info.completed) {
+                          $('indicator-<%=job_id%>').hide()
+                      } else {
+                          $('indicator-<%=job_id%>').show()
+                          $('indicator-<%=job_id%>').style.width = '100%'
+                      }
+                      <%= options[:on_success] if options[:on_success] %>
+                      location.href = '<%= options[:success_url] %>'
+                      pe.stop()
+                      break;
+                    case "failed":
+                      $('status-<%=job_id%>').innerHTML = "<%= options[:status_messages][:failed].gsub(/"/, '\\"') %>";
+                      $('indicator-<%=job_id%>').hide()
+                      <%- if options[:error_url] -%>
+                      location.href = '<%= options[:error_url] %>'
+                      <%- end -%>
+                      break;
+                  }
+              }
+          })
+      }
+  }, <%= options[:interval].to_i.to_s -%>)
+</script>
