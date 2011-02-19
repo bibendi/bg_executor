@@ -6,7 +6,7 @@ module BgExecutor
       def create(id, job_name, params)
         real_job_name = "#{job_name}_job"
 
-        require real_job_name.to_s
+        require "#{RAILS_ROOT}/app/jobs/#{real_job_name}"
 
         class_name = real_job_name.classify
 
@@ -116,7 +116,7 @@ module BgExecutor
       def create(job_name, params)
         real_job_name = "#{job_name}_job"
 
-        require real_job_name.to_s
+        require "#{RAILS_ROOT}/app/jobs/#{real_job_name}"
 
         class_name = real_job_name.classify
 

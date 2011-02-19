@@ -1,12 +1,6 @@
 module BgExecutor
   class Executor
 
-    # constructor
-    def initialize
-      #
-    end
-
-    # @return BgExecutor::Client
     def client
       @client ||= BgExecutor::Client.new
     end
@@ -28,23 +22,21 @@ module BgExecutor
         client.finish_job! id
 
         log "Finished job ##{id}"
-      rescue
-        client.fail_job! id, $!
-
-        log "Failed job id => #{id}, :name => #{name}, :args => #{args.inspect}\n\nError: #{$!.message}\n\nBacktrace: #{$!.backtrace.join("\n")}"
+      rescue Exception => e
+        log "Failed job id => #{id}, :name => #{name}, :args => #{args.inspect}\n\nError: #{e.message}\n\nBacktrace: #{e.backtrace.join("\n")}"
+        client.fail_job! id, e
       end
       $0 = "Job ##{job_hash[:id]}: #{job_hash[:job_name]}*"
     end
 
-    def execute_regular_job(name, params)
-      $0 = "Job_regular: #{name}"
-      log "Executing regular job #{name}"
-      job = ::BgExecutor::Job::Regular.create(name, params)
-      job.execute
-      log "Finished regular job #{name}"
-      $0 = "Job_regular: #{name}*"
-    rescue
-      log "Failed regular job #{name}, :params => #{params.inspect} \n\nError: #{$!.message}\n\nBacktrace: #{$!.backtrace.join("\n")}"
+    def execute_regular_job(job)
+      $0 = "Job: #{job[:name]}"
+      log "** Executing regular job #{job[:name]} **"
+      ::BgExecutor::Job::Regular.create(job[:name], job[:args]).execute
+      log "*** Finished regular job #{job[:name]} **"
+      $0 = "Job: #{job[:name]}*"
+    rescue Exception => e
+      log "Failed regular job #{job[:name]}, :params => #{job[:params].inspect} \n\nError: #{e.message}\n\nBacktrace: #{e.backtrace.join("\n")}"
     end
 
     # Log message to stdout

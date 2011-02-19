@@ -2,79 +2,87 @@ module BgExecutor
   class Daemon
     DEFAULT_CONCURRENCY = 4
     DEFAULT_QUEUE_TIMEOUT = 300
+    DEFAULT_REGULAR_JOB_TIMEOUT = 1.hour
 
     def initialize
-      if File.exist?(file = "#{RAILS_ROOT}/app/jobs/schedule.rb")
-        require file
-        @has_regular_jobs = BgExecutor::Schedule.tasks.present? && !BgExecutor::Schedule.tasks.empty?
-      end
+      @daemon_groups = {}
+      client.load_regular_jobs
     end
 
     def execute_job
       job = client.pop
       return unless job
 
-      wait_till_fork_allowed! do
-        puts "Executing job ##{job[:id]}"
-        @daemon_group = Daemons.run_proc('bg_executor_job.rb', daemon_options) do
-          db_reconnect!
-
+      wait_till_fork_allowed!(:jobs) do
+        log "Executing job ##{job[:id]}"
+        @daemon_groups[:jobs] = Daemons.run_proc('bg_executor_job.rb', self.daemon_options) do
           begin
+            self.reconnect!
             ::BgExecutor::Executor.new.execute_job(job)
-          rescue => e
-            puts e.message
-            puts e.backtrace.join("\n")
+          rescue Exception => e
+            log e.message
+            log e.backtrace.join("\n")
             client.fail_job!(job[:id].to_i, e) if job
+          ensure
+            $running = false
+            exit()
           end
-          exit()
         end
       end
 
     rescue Timeout::Error
       client.fail_job! job[:id].to_i, BgExecutor::QueueError.new('BgExecutor queue is full. Timeout error.')
-      puts "Timeout::Error cannot push job(#{job[:id]}) into queue"
-    rescue => e
-      puts e.message
-      puts e.backtrace.join("\n")
+      log "Timeout::Error cannot push job(#{job[:id]}) into queue"
+    rescue Exception => e
+      log e.message
+      log e.backtrace.join("\n")
       client.fail_job!(job[:id].to_i, e) if job
     end
 
     def execute_regular_jobs
-      return unless @has_regular_jobs
+      return unless client.has_regular_jobs
+      job = nil
+      client.regular_jobs.each do |j|
+        job = j
+        last_run = client.get_last_run_for_regular_job(job[:name])
+        if !last_run || last_run + job[:interval] <= Time.now
+          client.set_last_run_for_regular_job(job[:name], Time.at((Time.now.to_i - (Time.now.to_i % job[:interval])))) # округляем
 
-      BgExecutor::Schedule.tasks.each do |task|
-        if !task[:last_run_at] || task[:last_run_at] + task[:interval] <= Time.now
-          unless Blocker.send("job_regular_#{task[:name]}_locked?".to_sym, DEFAULT_QUEUE_TIMEOUT)
-
-            puts "Executing regular job #{task[:name]}"
-
-            Daemons.run_proc('bg_executor_regular_job.rb', daemon_options) do
-              db_reconnect!
-
-              begin
-                Blocker.send("lock_job_regular_#{task[:name]}".to_sym, DEFAULT_QUEUE_TIMEOUT) do
-                  ::BgExecutor::Executor.new.execute_regular_job(task[:name], task[:args])
+          unless Blocker.locked?("job_regular_#{job[:name]}")
+            wait_till_fork_allowed!(:regular_jobs) do
+              log "Executing regular job ##{job[:name]}"
+              Blocker.lock("job_regular_#{job[:name]}", DEFAULT_REGULAR_JOB_TIMEOUT)
+              @daemon_groups[:regular_jobs] = Daemons.run_proc('bg_executor_regular_job.rb', self.daemon_options) do
+                begin
+                  self.reconnect!
+                  ::BgExecutor::Executor.new.execute_regular_job(job)
+                rescue Exception => e
+                  log e.message
+                  log e.backtrace.join("\n")
+                ensure
+                  $running = false
+                  Blocker.unlock("job_regular_#{job[:name]}")
+                  exit()
                 end
-              rescue => e
-                puts e.message
-                puts e.backtrace.join("\n")
               end
-              exit()
             end
+          else
+            log "Skiping regular job #{job[:name]}"
           end
-          task[:last_run_at] = Time.at((Time.now.to_i - (Time.now.to_i % 10))) # округляем до 10 секунд
         end
       end
-    rescue => e
-      puts e.message
-      puts e.backtrace.join("\n")
+    rescue Exception => e
+      log e.message
+      log e.backtrace.join("\n")
     end
 
-    def db_reconnect!
+    def reconnect!
       ActiveRecord::Base.logger.level = Logger::Severity::UNKNOWN
       ActiveRecord::Base.logger = Logger.new('/dev/null')
       ActiveRecord::Base.connection.reconnect!
       ActiveRecord::Base.verify_active_connections!
+      Blocker.reconnect!
+      client.reconnect!
     end
 
     def get_concurrency
@@ -104,17 +112,17 @@ module BgExecutor
 
     protected
 
-    def wait_till_fork_allowed!
-      if allowed_to_fork?
+    def wait_till_fork_allowed!(group)
+      if allowed_to_fork?(group)
         yield
         return
       else
-        puts "Queue is full. Waiting..."
+        log "Queue is full. Waiting..."
       end
       
       Timeout::timeout(get_queue_timeout) do
         loop do
-          if allowed_to_fork?
+          if allowed_to_fork?(group)
             yield
             break
           end
@@ -123,16 +131,21 @@ module BgExecutor
       end
     end
 
-    def allowed_to_fork?
-      executors_count < get_concurrency
+    def allowed_to_fork?(group)
+      executors_count(group) < get_concurrency
     end
 
-    def executors_count
-      if @daemon_group
-        @daemon_group.find_applications(@daemon_group.pidfile_dir).size
+    def executors_count(group)
+      if @daemon_groups[group]
+        @daemon_groups[group].find_applications(@daemon_groups[group].pidfile_dir).size
       else
         0
       end
+    end
+
+    # Log message to stdout
+    def log(message)
+      puts "%s: %s" % [Time.now.to_s, message]
     end
   end
 end

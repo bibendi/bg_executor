@@ -11,7 +11,8 @@ module BgExecutor
     STASH_KEY = "bg_executor:jobs_stash"
     SEQUENCE_KEY = "bg_executor:jobs_sequence"
     JOBS_KEY_PREFIX = "bg_executor:job:"
-    JOB_MAX_RUN_TIME = 30.minutes.to_f
+    RJOBS_KEY_PREFIX = "bg_executor:rjob:"
+    JOB_MAX_RUN_TIME = 3.hour.to_f
 
     # constructor
     def initialize
@@ -22,6 +23,10 @@ module BgExecutor
 
     def redis
       @cache
+    end
+
+    def reconnect!
+      @cache.redis.client.reconnect
     end
 
     # поставить задачу в очередь
@@ -99,9 +104,9 @@ module BgExecutor
       end
 
       return nil
-    rescue => exception
+    rescue Exception => e
       puts "Error in BgExecutor::Client#singleton_job_running?"
-      puts exception.message
+      puts e.message
       return nil
     end
 
@@ -166,7 +171,7 @@ module BgExecutor
     # обновить информацию о задании
     def update_job!(job_id, key, value)
       @cache[job_key job_id] = @cache[job_key job_id].merge(key => value)
-    rescue => e
+    rescue Exception => e
       puts "Error in BgExecutor::Client#update_job!"
       puts e.message
     end
@@ -177,7 +182,7 @@ module BgExecutor
 
       remove_from_stash job_id
       add_to_running job_id
-    rescue => e
+    rescue Exception => e
       puts "Error in BgExecutor::Client#start_job!"
       puts e.message
     end
@@ -192,7 +197,7 @@ module BgExecutor
       @cache.expire job_key(job_id), 600
 
       remove_from_running job_id
-    rescue => e
+    rescue Exception => e
       puts "Error in BgExecutor::Client#finish_job!"
       puts e.message
     end
@@ -214,7 +219,7 @@ module BgExecutor
       @cache.expire job_key(job_id), 600
 
       remove_from_running job_id
-    rescue => e
+    rescue Exception => e
       puts "Error in BgExecutor::Client#fail_job!"
       puts e.message
     end
@@ -243,7 +248,7 @@ module BgExecutor
         end
         job
       end
-    rescue => e
+    rescue Exception => e
       puts "Error in BgExecutor::Client#pop"
       puts e.message
       puts e.backtrace.join("\n")
@@ -256,7 +261,34 @@ module BgExecutor
       @cache[STASH_KEY] = {}
     end
 
-    private
+    attr_accessor :has_regular_jobs
+    attr_accessor :regular_jobs
+
+    def load_regular_jobs
+      unless File.exist?(file = "#{RAILS_ROOT}/app/jobs/schedule.rb")
+        @has_regular_jobs = false
+        return
+      end
+
+      require file
+      @has_regular_jobs = BgExecutor::Schedule.tasks.present? && !BgExecutor::Schedule.tasks.empty?
+
+      @regular_jobs = BgExecutor::Schedule.tasks.dup
+      @regular_jobs.each do |task|
+        set_last_run_for_regular_job(task[:name], task[:last_run_at])
+      end
+    end
+
+    # храним время последнего запуска в редисе, чтобы можно было запускать на нескольких серверах
+    def set_last_run_for_regular_job(job_name, time)
+      @cache[rjob_key(job_name)] = time.to_i
+    end
+
+    def get_last_run_for_regular_job(job_name)
+      Time.at(@cache[rjob_key(job_name)].to_i)
+    end
+
+    protected
     def next_id
       @cache.increment(SEQUENCE_KEY)
     end
@@ -268,6 +300,10 @@ module BgExecutor
 
     def job_key(id)
       "#{JOBS_KEY_PREFIX}#{id}"
+    end
+
+    def rjob_key(name)
+      "#{RJOBS_KEY_PREFIX}#{name}"
     end
 
     # удалить из стека текущих задач какой-нибудь джоб

@@ -130,10 +130,11 @@ module BgExecutor
       result
     end
 
-    private
     def redis
       @redis ||= ::Redis.new(::BgExecutor::Configuration[:redis])
     end
+
+    private
 
     def serialize(data)
       Marshal.dump data

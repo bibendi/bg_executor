@@ -23,7 +23,7 @@ Signal.trap("INT") { terminate }
 while($running) do
   daemon.execute_job
   daemon.execute_regular_jobs
-  sleep 0.33
+  sleep 0.5
 end
 
 puts 'Exit'
